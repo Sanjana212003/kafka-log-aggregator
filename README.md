@@ -176,3 +176,99 @@ docker-compose down
 * Keep `.env` private — it contains your Slack webhook.
 
 ---
+
+---
+
+## **Contribution: Dead Letter Queue (DLQ) Validation**
+
+### **Contributor**
+
+**Sanjana Jaysing Redekar**  
+Feature branch: `feature/dlq-validation`  
+Date: **2026-08-14**
+
+### **Enhancement Implemented**
+
+Added **Dead Letter Queue (DLQ) handling and input validation** to improve the reliability of the Kafka log consumer.
+
+The consumer now validates incoming Kafka log messages before indexing them into Elasticsearch.
+
+### **Changes Made**
+
+- Added a dedicated Kafka **Dead Letter Queue (DLQ)** topic:
+  - `app-logs-dlq`
+- Added validation for required log fields:
+  - `timestamp`
+  - `level`
+  - `service`
+  - `message`
+- Added `validate_log()` to identify malformed or incomplete log messages.
+- Added `send_to_dlq()` to route invalid messages to the DLQ.
+- DLQ messages contain:
+  - Original message
+  - Validation failure reason
+  - Failure timestamp
+- Prevented invalid log messages from being indexed into Elasticsearch.
+- Added error handling so that Kafka offsets are not committed when DLQ delivery fails.
+- Preserved the existing ERROR-level Slack alerting and Elasticsearch indexing functionality for valid messages.
+
+### **Validation & Testing**
+
+The implementation was tested locally with Kafka, Elasticsearch, and the Python consumer.
+
+Verified that:
+
+- `consumer.py` compiles successfully.
+- Kafka connectivity is working.
+- `app-logs-dlq` topic exists.
+- A malformed Kafka log missing the `level` field is detected by validation.
+- The malformed message is successfully sent to `app-logs-dlq`.
+- Valid log messages continue to be indexed into Elasticsearch.
+- Invalid messages are not indexed into Elasticsearch.
+
+## 1. Test One
+### **Send one invalid message**
+python -c "from kafka import KafkaProducer; import json; p=KafkaProducer(bootstrap_servers=['127.0.0.1:9092'], value_serializer=lambda v: json.dumps(v).encode('utf-8')); msg={'timestamp':'2026-08-14T13:00:00','service':'payment-service','message':'DLQ test - missing level'}; p.send('app-logs', value=msg).get(timeout=10); p.flush(); p.close(); print('Invalid test message sent:', msg)"
+
+<img width="940" height="154" alt="image" src="https://github.com/user-attachments/assets/4b27c31a-0b83-4266-a14c-d4550bdc34cb" />
+
+### **Output: To see the Error visible in Consumer Console**
+docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic app-logs-dlq --from-beginning --max-messages 1
+
+<img width="940" height="148" alt="image" src="https://github.com/user-attachments/assets/43f1f0c2-de1b-4e44-9538-31d37eb1afa6" />
+
+### **Output: Invalid log**
+
+<img width="940" height="342" alt="image" src="https://github.com/user-attachments/assets/8a007bf0-7a92-42f9-bb57-40c2630cd76a" />
+
+## **2. Test Two**
+### **Send one valid message**
+python -c "from kafka import KafkaProducer; import json; p=KafkaProducer(bootstrap_servers=['127.0.0.1:9092'], value_serializer=lambda v: json.dumps(v).encode('utf-8')); msg={'timestamp':'2026-08-14T13:30:00','level':'INFO','service':'payment-service','message':'Valid DLQ test message'}; p.send('app-logs', value=msg).get(timeout=10); p.flush(); p.close(); print('Valid test message sent:', msg)"
+
+<img width="825" height="259" alt="image" src="https://github.com/user-attachments/assets/c451a9dc-bf4b-4ca3-89ea-8e1fda050fa3" />
+
+### **Output: Elasticsearch response proves that the valid message reached app-logs-index**
+
+<img width="940" height="583" alt="image" src="https://github.com/user-attachments/assets/069134dc-7f1f-4af6-9cca-6a93e4b536c6" />
+
+## **Example DLQ Flow**
+
+```text
+Kafka Producer
+      |
+      v
+  app-logs
+      |
+      v
+Kafka Consumer
+      |
+      v
+  Validate Log
+    /      \
+ Invalid    Valid
+   |          |
+   v          v
+DLQ Topic   Elasticsearch
+   |
+   v
+app-logs-dlq
